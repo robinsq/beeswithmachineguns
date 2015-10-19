@@ -1,4 +1,4 @@
-#!/bin/env python
+#!/bin/env python2.7
 
 """
 The MIT License
@@ -215,7 +215,12 @@ def up(count, group, zone, image_id, instance_type, username, key_name, subnet, 
 
         print('Bee %s is ready for the attack.' % instance.id)
 
-    ec2_connection.create_tags(instance_ids, { "Name": "a bee!" })
+    ec2_connection.create_tags(instance_ids, { "monetate:remote-user": "ec2-user" })
+
+    bee_index = 0
+    for instance in instance_ids:
+        ec2_connection.create_tags([instance], { "Name": "monetate-bee-%d" % (bee_index) })
+        bee_index += 1
 
     _write_server_list(username, key_name, zone, instances)
 
@@ -373,10 +378,123 @@ def _attack(params):
 
         complete_requests_search = re.search('Complete\ requests:\s+([0-9]+)', ab_results)
 
-        response['number_of_200s'] = len(re.findall('HTTP/1.1\ 2[0-9][0-9]', ab_results))
-        response['number_of_300s'] = len(re.findall('HTTP/1.1\ 3[0-9][0-9]', ab_results))
-        response['number_of_400s'] = len(re.findall('HTTP/1.1\ 4[0-9][0-9]', ab_results))
-        response['number_of_500s'] = len(re.findall('HTTP/1.1\ 5[0-9][0-9]', ab_results))
+        response['number_of_200s'] = len(re.findall('HTTP/1..\ 2[0-9][0-9]', ab_results))
+        response['number_of_300s'] = len(re.findall('HTTP/1..\ 3[0-9][0-9]', ab_results))
+        response['number_of_400s'] = len(re.findall('HTTP/1..\ 4[0-9][0-9]', ab_results))
+        response['number_of_500s'] = len(re.findall('HTTP/1..\ 5[0-9][0-9]', ab_results))
+
+        response['ms_per_request'] = float(ms_per_request_search.group(1))
+        response['requests_per_second'] = float(requests_per_second_search.group(1))
+        response['failed_requests'] = float(failed_requests.group(1))
+        response['complete_requests'] = float(complete_requests_search.group(1))
+
+        stdin, stdout, stderr = client.exec_command('cat %(csv_filename)s' % params)
+        response['request_time_cdf'] = []
+        for row in csv.DictReader(stdout):
+            row["Time in ms"] = float(row["Time in ms"])
+            response['request_time_cdf'].append(row)
+        if not response['request_time_cdf']:
+            print('Bee %i lost sight of the target (connection timed out reading csv).' % params['i'])
+            return None
+
+        print('Bee %i is out of ammo.' % params['i'])
+
+        client.close()
+
+        return response
+    except socket.error as e:
+        return e
+    except Exception as e:
+        traceback.print_exc()
+        print()
+        raise e
+
+
+def _new_attack(params):
+    """
+    Test the target URL with requests.
+
+    Intended for use with multiprocessing.
+    """
+    print('Bee %i is joining the swarm.' % params['i'])
+
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        pem_path = params.get('key_name') and _get_pem_path(params['key_name']) or None
+        if not os.path.isfile(pem_path):
+            client.load_system_host_keys()
+            client.connect(params['instance_name'], username=params['username'])
+        else:
+            client.connect(
+                params['instance_name'],
+                username=params['username'],
+                key_filename=pem_path)
+
+        print('Bee %i is firing her machine gun. Bang bang!' % params['i'])
+
+        options = ''
+        if params['headers'] is not '':
+            for h in params['headers'].split(';'):
+                if h != '':
+                    options += ' -H "%s"' % h.strip()
+
+        stdin, stdout, stderr = client.exec_command('mktemp')
+        # paramiko's read() returns bytes which need to be converted back to a str
+        params['csv_filename'] = IS_PY2 and stdout.read().strip() or stdout.read().decode('utf-8').strip()
+        if params['csv_filename']:
+            options += ' -e %(csv_filename)s' % params
+        else:
+            print('Bee %i lost sight of the target (connection timed out creating csv_filename).' % params['i'])
+            return None
+
+        if params['post_file']:
+            pem_file_path=_get_pem_path(params['key_name'])
+            os.system("scp -q -o 'StrictHostKeyChecking=no' -i %s %s %s@%s:/tmp/honeycomb"
+                      "" % (pem_file_path, params['post_file'], params['username'], params['instance_name']))
+            options += ' -T "%(mime_type)s; charset=UTF-8" -p /tmp/honeycomb' % params
+
+        if params['keep_alive']:
+            options += ' -k'
+
+        if params['basic_auth'] is not '':
+            options += ' -A %s' % params['basic_auth']
+
+        params['options'] = options
+        benchmark_command = 'ab.new -v 3 -r -n %(num_requests)s -c %(concurrent_requests)s %(options)s -L "%(file_url)s"' % params
+        stdin, stdout, stderr = client.exec_command(benchmark_command)
+
+        response = {}
+
+        # paramiko's read() returns bytes which need to be converted back to a str
+        ab_results = IS_PY2 and stdout.read() or stdout.read().decode('utf-8')
+        ms_per_request_search = re.search('Time\ per\ request:\s+([0-9.]+)\ \[ms\]\ \(mean\)', ab_results)
+
+        if not ms_per_request_search:
+            print('Bee %i lost sight of the target (connection timed out running ab).' % params['i'])
+            return None
+
+        requests_per_second_search = re.search('Requests\ per\ second:\s+([0-9.]+)\ \[#\/sec\]\ \(mean\)', ab_results)
+        failed_requests = re.search('Failed\ requests:\s+([0-9.]+)', ab_results)
+        response['failed_requests_connect'] = 0
+        response['failed_requests_receive'] = 0
+        response['failed_requests_length'] = 0
+        response['failed_requests_exceptions'] = 0
+        if float(failed_requests.group(1)) > 0:
+            failed_requests_detail = re.search('(Connect: [0-9.]+, Receive: [0-9.]+, Length: [0-9.]+, Exceptions: [0-9.]+)', ab_results)
+            if failed_requests_detail:
+                response['failed_requests_connect'] = float(re.search('Connect:\s+([0-9.]+)', failed_requests_detail.group(0)).group(1))
+                response['failed_requests_receive'] = float(re.search('Receive:\s+([0-9.]+)', failed_requests_detail.group(0)).group(1))
+                response['failed_requests_length'] = float(re.search('Length:\s+([0-9.]+)', failed_requests_detail.group(0)).group(1))
+                response['failed_requests_exceptions'] = float(re.search('Exceptions:\s+([0-9.]+)', failed_requests_detail.group(0)).group(1))
+
+        complete_requests_search = re.search('Complete\ requests:\s+([0-9]+)', ab_results)
+
+        response['number_of_200s'] = len(re.findall('HTTP/1..\ 2[0-9][0-9]', ab_results))
+        response['number_of_300s'] = len(re.findall('HTTP/1..\ 3[0-9][0-9]', ab_results))
+        response['number_of_400s'] = len(re.findall('HTTP/1..\ 4[0-9][0-9]', ab_results))
+        response['number_of_500s'] = len(re.findall('HTTP/1..\ 5[0-9][0-9]', ab_results))
 
         response['ms_per_request'] = float(ms_per_request_search.group(1))
         response['requests_per_second'] = float(requests_per_second_search.group(1))
@@ -691,6 +809,100 @@ def attack(url, n, c, **options):
     # Spin up processes for connecting to EC2 instances
     pool = Pool(len(params))
     results = pool.map(_attack, params)
+
+    summarized_results = _summarize_results(results, params, csv_filename)
+    print('Offensive complete.')
+    _print_results(summarized_results)
+
+    print('The swarm is awaiting new orders.')
+
+    if 'performance_accepted' in summarized_results:
+        if summarized_results['performance_accepted'] is False:
+            print("Your targets performance tests did not meet our standard.")
+            sys.exit(1)
+        else:
+            print('Your targets performance tests meet our standards, the Queen sends her regards.')
+            sys.exit(0)
+
+
+def new_attack(file_url, n, c, **options):
+    """
+    Test the root url of this site.
+    """
+    username, key_name, zone, instance_ids = _read_server_list()
+    headers = options.get('headers', '')
+    csv_filename = options.get("csv_filename", '')
+    cookies = options.get('cookies', '')
+    post_file = options.get('post_file', '')
+    keep_alive = options.get('keep_alive', False)
+    basic_auth = options.get('basic_auth', '')
+
+    if csv_filename:
+        try:
+            stream = open(csv_filename, 'w')
+        except IOError as e:
+            raise IOError("Specified csv_filename='%s' is not writable. Check permissions or specify a different filename and try again." % csv_filename)
+
+    if not instance_ids:
+        print('No bees are ready to attack.')
+        return
+
+    print('Connecting to the hive.')
+
+    ec2_connection = boto.ec2.connect_to_region(_get_region(zone))
+
+    print('Assembling bees.')
+
+    reservations = ec2_connection.get_all_instances(instance_ids=instance_ids)
+
+    instances = []
+
+    for reservation in reservations:
+        instances.extend(reservation.instances)
+
+    instance_count = len(instances)
+
+    if n < instance_count * 2:
+        print('bees: error: the total number of requests must be at least %d (2x num. instances)' % (instance_count * 2))
+        return
+    if c < instance_count:
+        print('bees: error: the number of concurrent requests must be at least %d (num. instances)' % instance_count)
+        return
+    if n < c:
+        print('bees: error: the number of concurrent requests (%d) must be at most the same as number of requests (%d)' % (c, n))
+        return
+
+    requests_per_instance = int(float(n) / instance_count)
+    connections_per_instance = int(float(c) / instance_count)
+
+    print('Each of %i bees will fire %s rounds, %s at a time.' % (instance_count, requests_per_instance, connections_per_instance))
+
+    params = []
+
+    for i, instance in enumerate(instances):
+        params.append({
+            'i': i,
+            'instance_id': instance.id,
+            'instance_name': instance.private_dns_name if instance.public_dns_name == "" else instance.public_dns_name,
+            'file_url': file_url,
+            'concurrent_requests': connections_per_instance,
+            'num_requests': requests_per_instance,
+            'username': username,
+            'key_name': key_name,
+            'headers': headers,
+            'cookies': cookies,
+            'post_file': options.get('post_file'),
+            'keep_alive': options.get('keep_alive'),
+            'mime_type': options.get('mime_type', ''),
+            'tpr': options.get('tpr'),
+            'rps': options.get('rps'),
+            'basic_auth': options.get('basic_auth')
+        })
+
+    print('Organizing the swarm.')
+    # Spin up processes for connecting to EC2 instances
+    pool = Pool(len(params))
+    results = pool.map(_new_attack, params)
 
     summarized_results = _summarize_results(results, params, csv_filename)
     print('Offensive complete.')

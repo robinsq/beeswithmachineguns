@@ -46,6 +46,7 @@ A utility for arming (creating) many bees (small EC2 instances) to attack
 commands:
   up      Start a batch of load testing servers.
   attack  Begin the attack on a specific url.
+  new_attack  Begin the attack on a specific url.
   down    Shutdown and deactivate the load testing servers.
   report  Report the status of the load testing servers.
     """)
@@ -71,10 +72,10 @@ commands:
                         action='store', dest='instance', type='string', default='ami-ff17fb96',
                         help="The instance-id to use for each server from (default: ami-ff17fb96).")
     up_group.add_option('-t', '--type',  metavar="TYPE",  nargs=1,
-                        action='store', dest='type', type='string', default='t1.micro',
+                        action='store', dest='type', type='string', default='m3.large',
                         help="The instance-type to use for each server (default: t1.micro).")
     up_group.add_option('-l', '--login',  metavar="LOGIN",  nargs=1,
-                        action='store', dest='login', type='string', default='newsapps',
+                        action='store', dest='login', type='string', default='ec2-user',
                         help="The ssh username name to use to connect to the new servers (default: newsapps).")
     up_group.add_option('-v', '--subnet',  metavar="SUBNET",  nargs=1,
                         action='store', dest='subnet', type='string', default=None,
@@ -89,6 +90,9 @@ commands:
                                """Beginning an attack requires only that you specify the -u option with the URL you wish to target.""")
 
     # Required
+    attack_group.add_option('-L', '--file-url', metavar="FileURL", nargs=1,
+                            action='store', dest='file_url', type='string',
+                            help="File Containing URLs of the target to attack.")
     attack_group.add_option('-u', '--url', metavar="URL", nargs=1,
                             action='store', dest='url', type='string',
                             help="URL of the target to attack.")
@@ -167,6 +171,21 @@ commands:
         )
 
         bees.attack(options.url, options.number, options.concurrent, **additional_options)
+    elif command == 'new_attack':
+        if not options.file_url:
+            parser.error('To run an attack you need to specify a file containing url with -L')
+        additional_options = dict(
+            cookies=options.cookies,
+            headers=options.headers,
+            post_file=options.post_file,
+            keep_alive=options.keep_alive,
+            mime_type=options.mime_type,
+            csv_filename=options.csv_filename,
+            tpr=options.tpr,
+            rps=options.rps,
+            basic_auth=options.basic_auth
+        )
+        bees.new_attack(options.file_url, options.number, options.concurrent, **additional_options)
 
     elif command == 'down':
         bees.down()
