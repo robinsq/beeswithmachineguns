@@ -378,10 +378,10 @@ def _attack(params):
 
         complete_requests_search = re.search('Complete\ requests:\s+([0-9]+)', ab_results)
 
-        response['number_of_200s'] = len(re.findall('HTTP/1..\ 2[0-9][0-9]', ab_results))
-        response['number_of_300s'] = len(re.findall('HTTP/1..\ 3[0-9][0-9]', ab_results))
-        response['number_of_400s'] = len(re.findall('HTTP/1..\ 4[0-9][0-9]', ab_results))
-        response['number_of_500s'] = len(re.findall('HTTP/1..\ 5[0-9][0-9]', ab_results))
+        response['number_of_200s'] = len(re.findall('HTTP/1\.[0-1]\ 2[0-9][0-9]', ab_results))
+        response['number_of_300s'] = len(re.findall('HTTP/1\.[0-1]\ 3[0-9][0-9]', ab_results))
+        response['number_of_400s'] = len(re.findall('HTTP/1\.[0-1]\ 4[0-9][0-9]', ab_results))
+        response['number_of_500s'] = len(re.findall('HTTP/1\.[0-1]\ 5[0-9][0-9]', ab_results))
 
         response['ms_per_request'] = float(ms_per_request_search.group(1))
         response['requests_per_second'] = float(requests_per_second_search.group(1))
