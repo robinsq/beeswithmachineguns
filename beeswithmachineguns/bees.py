@@ -219,7 +219,7 @@ def up(count, group, zone, image_id, instance_type, username, key_name, subnet, 
 
     bee_index = 0
     for instance in instance_ids:
-        ec2_connection.create_tags([instance], { "Name": "monetate-bee-%d" % (bee_index) })
+        ec2_connection.create_tags([instance], { "Name": "monetate-bee-%s-%d" % (os.getenv('USER', ''), bee_index) })
         bee_index += 1
 
     _write_server_list(username, key_name, zone, instances)
